@@ -4,14 +4,14 @@ import cloudscraper #https://pypi.org/project/cloudscraper/
 
 # Create cloudscraper and find webpage
 # Cloudscraper bypasses cloudflare
-# Create a cloudscraper instance and fetch the webpage
+# Choose the EUvsDisinfo page you want to scrape
 scraper = cloudscraper.create_scraper()
 web = scraper.get("https://euvsdisinfo.eu/report/the-icj-has-effectively-sided-with-russia-in-the-case-of-the-mh17-crash/").text
 page = BeautifulSoup(web, "html.parser")
 
 #print(page.prettify()) # Display html page 
 
-# Initialize a dictionary to hold the scraped data
+# Initialise a dictionary to hold the scraped data
 data = {
     "Outlet": None,
     "Date of publication": None,
