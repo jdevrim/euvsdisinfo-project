@@ -21,7 +21,8 @@ data = {
     "Response": None
 }
 
-# Iterate through each list item in the details list
+# Iterate through each list item in the details list 
+# (Outlet, Date of Pub, Article Lang, Countries / Regions discussed)
 for li in page.select('.b-report__details-list li'):
     text = li.text.strip()
     if "Outlet:" in text:
@@ -45,7 +46,7 @@ if summary_section:
 # Extracting the RESPONSE
 response_section = page.find('div', class_='b-report__response')
 
-# Implement spaces 
+# Implement spaces in response text
 if response_section:
     response_texts = []  # Initialize an empty list to hold parts of the response text
     for child in response_section.find('div', class_='b-text').children:
@@ -62,7 +63,7 @@ if response_section:
     # Join the parts into a single string, ensuring spaces are correctly managed
     response_text = ' '.join(response_texts).replace('  ', ' ')
     data["Response"] = response_text.strip()
-    
-# Print the data
+
+
 for key, value in data.items():
     print(f"{key}: {value}\n")
