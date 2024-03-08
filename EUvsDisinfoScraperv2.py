@@ -6,7 +6,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# Web Scraping libraries
+# Web scraping libraries
 from bs4 import BeautifulSoup
 import requests
 import cloudscraper #https://pypi.org/project/cloudscraper/
@@ -14,20 +14,7 @@ import cloudscraper #https://pypi.org/project/cloudscraper/
 import csv # Writing to CSV file
 import undetected_chromedriver as uc # Undetected driver from cloudflare systems
 import time # For wait times (testing)
-
-options = uc.ChromeOptions()
-#options.add_argument("--headless=new")
-#options.add_argument('--window-size=1920,1080')
-#options.add_argument('--enable-logging --v=1')
-
-
-# Initialise the driver with the service and options
-driver = uc.Chrome(options=options) # python3 -m pip install setuptools
-print("Driver initialised")
-
-# Get database URL
-base_url = "https://euvsdisinfo.eu/disinformation-cases/"
-driver.get(base_url)
+import math # Calculating pages
 
 # Function to scrape the webpage
 def scrape_page(driver):
@@ -40,6 +27,7 @@ def scrape_page(driver):
 
     # Initialise a dictionary to hold the scraped data
     data = {
+        "Title": None,
         "Outlet": None,
         "Date of publication": None,
         "Article language(s)": None,
@@ -47,6 +35,10 @@ def scrape_page(driver):
         "Summary": None,
         "Response": None
     }
+
+    # Extract title and remove "Disinfo: " prefix if present
+    raw_title = page.find('title').get_text().strip()
+    data["Title"] = raw_title.replace('Disinfo: ', '')
 
     # Iterate through each list item in the details list 
     # (Outlet, Date of Pub, Article Lang, Countries / Regions discussed)
@@ -93,39 +85,85 @@ def scrape_page(driver):
 
     return data 
 
+options = ChromeOptions()
+options.add_argument("--headless=new")
+
+# Initialise the driver with the service and options
+driver = uc.Chrome(options=options) # python3 -m pip install setuptools
+print("Driver initialised")
+
+# Chromedriver options (working lol)
+driver.set_window_size(600, 600)
+
+# Get database URL
+base_url = "https://euvsdisinfo.eu/disinformation-cases/?numberposts=60&view=grid&sort=desc"
+driver.get(base_url)
+WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "a.b-archive__database-item")))
+
+# Get the last page divided by two
+# Fix for database breaking after reaching large page numbers
+# Fixed by finding last page number (half) and sorting by oldest entry and repeating scrape
+page_html = driver.page_source
+page = BeautifulSoup(page_html, "html.parser")
+pagination_items = page.select('a.b-pagination__item')[-1].get_text()  # Corrected variable name from soup to page
+last_page = int(pagination_items) if pagination_items.isdigit() else 1
+half_page = math.ceil(last_page / 2)
+print(last_page)
+print(half_page)
+
 scraped_data = []
+sort_order = "desc"  # Start with descending order
+page_num = 1
+halfway_reached = False  # Flag to indicate if halfway point has been reached
+page_limit = 1  # Set the number of pages you want to scrape
+pages_scraped = 0  # Initialize a counter to track the number of pages scraped
 
 try:
-    page_num = 1  # Starting from the first page
-    while True:        
+    while True:
+        # Adjust URL based on current page number and sort order
+        next_page_link = f"{base_url}&sort={sort_order}"
+        if page_num > 1:
+            next_page_link = f"https://euvsdisinfo.eu/disinformation-cases/page/{page_num}/?numberposts=60&view=grid&sort={sort_order}"
+
+        # Navigate to the next page link
+        driver.get(next_page_link)
+        WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "a.b-archive__database-item")))
+
         items = driver.find_elements(By.CSS_SELECTOR, "a.b-archive__database-item")
         item_links = [item.get_attribute('href') for item in items]
 
         for link in item_links:
             driver.get(link)
-            data = scrape_page(driver)
-            scraped_data.append(data)
+            data = scrape_page(driver)  # Assuming you have implemented this function
+            scraped_data.append(data)  # Assuming scraped_data is initialized before the loop
             driver.back()
-            time.sleep(1)  # Wait to ensure the list page has loaded
-        
-        # Attempt to go to the next page
-        next_page_link = f"{base_url}page/{page_num + 1}/"
-        driver.get(next_page_link)
-        time.sleep(2)  # Wait for the next page to load
+            WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "a.b-archive__database-item")))
 
-        # Check if the next page has items; if not, break the loop
-        if not driver.find_elements(By.CSS_SELECTOR, "a.b-archive__database-item"):
+        pages_scraped += 1  # Increment the counter after processing each page
+
+        if page_num >= half_page and not halfway_reached:
+            sort_order = "asc"  # Switch to ascending order
+            page_num = 1  # Restart from the first page
+            halfway_reached = True  # Prevent further changes in sort order
+            continue  # Skip the rest of the loop and start over with new sort order
+
+        if pages_scraped >= page_limit:
+            print(f"Reached the limit of {page_limit} pages for scraping.")
+            break
+       
+        page_num += 1  # Increment the page number for the next iteration
+
+        # Break the loop if there are no more pages to process
+        if not items:
             print("No more pages to process.")
             break
-        
-        page_num += 1
 
 finally:
     driver.quit()
 
 # Write the list of dictionaries to a CSV file
-keys = all_scraped_data[0].keys()  # Get the keys from the first item in the list
+keys = scraped_data[0].keys()  # Get the keys from the first item in the list
 with open('scraped_data.csv', 'w', newline='', encoding='utf-8') as output_file:
     dict_writer = csv.DictWriter(output_file, keys)
     dict_writer.writeheader()
-    dict_writer.writerows(all_scraped_data)
+    dict_writer.writerows(scraped_data)
