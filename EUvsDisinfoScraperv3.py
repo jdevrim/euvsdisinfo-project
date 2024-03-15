@@ -15,6 +15,7 @@ import cloudscraper #https://pypi.org/project/cloudscraper/
 
 # Tkinter GUI
 import tkinter as tk
+from tkinter import ttk
 import threading
 from threading import Thread
 
@@ -43,6 +44,21 @@ class Scraper:
 
         # Initialise driver with URL
         self.driver = self.setup_driver()
+
+
+    def fetch_countries(self):
+        page_html = self.driver.page_source
+        soup = BeautifulSoup(page_html.text, 'html.parser')
+    
+        countries = {}
+        options = soup.select('select[name="disinfo_countries[]"] option')
+        for option in options:
+            country_code = option['value']
+            country_name = option.text.strip()
+            countries[country_name] = country_code
+        
+        return countries 
+        print(countries)
 
 
     def setup_driver(self):
@@ -355,6 +371,7 @@ class ScraperGUI:
 if __name__ == "__main__":
     root = tk.Tk()
     scraper = Scraper("https://euvsdisinfo.eu/disinformation-cases/?view=grid&numberposts=60")
+    countries = fetch_countries()
     app = ScraperGUI(root, scraper)
     root.mainloop()
  
