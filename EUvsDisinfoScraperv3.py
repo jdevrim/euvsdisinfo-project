@@ -16,6 +16,7 @@ import cloudscraper #https://pypi.org/project/cloudscraper/
 # Tkinter GUI
 import tkinter as tk
 from tkinter import ttk
+from tkinter import messagebox
 import threading
 from threading import Thread
 
@@ -25,10 +26,12 @@ import time # For wait times (testing)
 import math # Calculating pages
 import pandas as pd # Preprocessing
 import subprocess # Killing chrome
-
+import json # Open json files
 
 class Scraper:
-    def __init__(self, base_url, page_limit = 1):
+    def __init__(self, base_url, page_limit = 2):
+        # Initialise URL
+        self.base_url = base_url
         # Initialise scraping states
         self.scraping = False # For pausing scrape
         self.pause_event = threading.Event()
@@ -44,22 +47,8 @@ class Scraper:
 
         # Initialise driver with URL
         self.driver = self.setup_driver()
-
-
-    def fetch_countries(self):
-        page_html = self.driver.page_source
-        soup = BeautifulSoup(page_html.text, 'html.parser')
-    
-        countries = {}
-        options = soup.select('select[name="disinfo_countries[]"] option')
-        for option in options:
-            country_code = option['value']
-            country_name = option.text.strip()
-            countries[country_name] = country_code
-        
-        return countries 
-        print(countries)
-
+        self.driver.get(self.base_url)
+        self.wait_for_elements("a.b-archive__database-item", 5)
 
     def setup_driver(self):
         # Driver setup with detailed options
@@ -161,25 +150,31 @@ class Scraper:
 
 
     def accept_cookies(self):
-        try:
-            wait = WebDriverWait(self.driver, 10)
-            cookies = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.c-button")))
-            self.driver.execute_script("arguments[0].click();", cookies)
-            print("Cookies accepted")
-        except (NoSuchElementException, TimeoutException):
-            print("Cookies not found")
+        if self.driver:
+            try:
+                wait = WebDriverWait(self.driver, 10)
+                cookies = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.c-button")))
+                self.driver.execute_script("arguments[0].click();", cookies)
+                print("Cookies accepted")
+            except (NoSuchElementException, TimeoutException):
+                print("Cookies not found")
+        else:
+            pass
 
 
     def pagnation_info(self):
-        # Get the last page divided by two
-        # Fix for database breaking after reaching large page numbers
-        # Fixed by finding last page number (half) and sorting by oldest entry and repeating scrape
-        page_html = self.driver.page_source
-        page = BeautifulSoup(page_html, "html.parser")
-        pagination_items = page.select('a.b-pagination__item')[-1].get_text()  
-        last_page = int(pagination_items) if pagination_items.isdigit() else 1
-        half_page = math.ceil(last_page / 2)
-        return half_page        
+        if self.driver:
+            # Get the last page divided by two
+            # Fix for database breaking after reaching large page numbers
+            # Fixed by finding last page number (half) and sorting by oldest entry and repeating scrape
+            page_html = self.driver.page_source
+            page = BeautifulSoup(page_html, "html.parser")
+            pagination_items = page.select('a.b-pagination__item')[-1].get_text()  
+            last_page = int(pagination_items) if pagination_items.isdigit() else 1
+            half_page = math.ceil(last_page / 2)
+            return half_page
+        else:
+            pass        
 
 
     def save_data(self):
@@ -205,7 +200,7 @@ class Scraper:
             print("No data was scraped. CSV file will not be created")
     
 
-    def wait_for_elements(self, css_selector, timeout = 10):
+    def wait_for_elements(self, css_selector, timeout):
         # Wait for elements to be present on page
         WebDriverWait(self.driver, timeout).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, css_selector)))
     
@@ -219,34 +214,47 @@ class Scraper:
 
     def run(self):
         self.scraping = True
-        # Get URL and open site
-        self.driver.get(self.base_url)
-        self.wait_for_elements("a.b-archive__database-item")
-
-        # Accept cookies and get pagnation info.
-        self.accept_cookies()
-        half_page = self.pagnation_info()
-
         try:
-            while self.check_if_scraping():
+            # Accept cookies and get pagnation info.
+            self.accept_cookies()
+            half_page = self.pagnation_info()
+        except Exception as e:
+            print(f"Initialisation error: {e}")
+            return 
+        try:
+            while self.check_if_scraping() and self.driver:
+                url_size_before_scraping = len(self.scraped_urls) 
                 try:
                     # Load the first or next page
                     print(f"Scraping page {self.page_num} in {self.sort_order} order.")
                     print(f"Total pages scraped: {self.pages_scraped}")
                     print(f"Total items scraped: {self.items_scraped}")
 
-                    # Adjust URL based on current page number and sort order
-                    next_page_link = f"{self.base_url}&sort={self.sort_order}"
+                    # Adjust URL based on current page number, sort order, languages and tags.
+                    country_params = "&".join([f"disinfo_countries[]={code}" for code in self.selected_countries])
+                    language_params = "&".join([f"disinfo_language[]={lang}" for lang in self.selected_languages])
+                    tag_params = "&".join([f"disinfo_keywords[]={tag}" for tag in self.selected_tags])
+                    next_page_link = f"{self.base_url}&{country_params}&{language_params}&{tag_params}&sort={self.sort_order}"
+                    print(next_page_link)
+                    
                     if self.page_num > 1:
-                        next_page_link = f"https://euvsdisinfo.eu/disinformation-cases/page/{self.page_num}/?numberposts=60&view=grid&sort={self.sort_order}"
-
+                        next_page_link += f"&page={self.page_num}"
                     # Navigate to the next page link
                     self.driver.get(next_page_link)
-                    self.wait_for_elements("a.b-archive__database-item")
-                
+                    try:
+                        self.wait_for_elements("a.b-archive__database-item", 3)
+                    except TimeoutException:
+                        print("No more pages to process...")
+                        break
+
                     # Find all items on the page
                     items = self.driver.find_elements(By.CSS_SELECTOR, "a.b-archive__database-item")
+                    # Break if no items found
+                    if items is None or len(items) == 0:
+                        print("No more pages to process...")
+                        break
                     item_links = [item.get_attribute('href') for item in items]
+
                     # Loop through each item and apply scraping logic
                     for link in item_links:
                         if not self.check_if_scraping():
@@ -264,12 +272,16 @@ class Scraper:
                             print(f"Error scraping {link}: {e}")
                         finally:
                             self.driver.back()
-                            self.wait_for_elements("a.b-archive__database-item")
+                            self.wait_for_elements("a.b-archive__database-item", 5)
                     else:
                         self.pages_scraped += 1 # Increment counters
                         self.page_num += 1
                     
-
+                    # Break the loop if no new items were added
+                    if len(self.scraped_urls) == url_size_before_scraping:
+                        print("No new items found, ending scrape.")
+                        break  
+                    
                     # Check for halfway mark (fix for database breaking)
                     if self.page_num >= half_page and not self.halfway_reached:
                         self.sort_order = "ascending"  # Switch to ascending order
@@ -282,11 +294,6 @@ class Scraper:
                         print(f"Reached the page limit of {self.page_limit}...")
                         break
                 
-                    # Break the loop if there are no more pages to process
-                    if not items:
-                        print("No more pages to process...")
-                        break
-                
                 # Error catching
                 except TimeoutException:
                     print(f"Timed out waiting for page {self.page_num} to load, skipping to next page.")
@@ -295,36 +302,43 @@ class Scraper:
 
                 except NoSuchWindowException:
                     print("Browser window closed unexpectedly.")
+                    self.scraping = False  # Set scraping to False to safely terminate the loop
                     break
 
                 except Exception as e:
                     print(f"An unexpected error has occured {e}")
                     break
-
+        
         except WebDriverException as e:
             print(f"WebDriver encountered an issue: {e}")
+
         except KeyboardInterrupt:
             print("Scraping interrupted by user, exiting...")
+
         except Exception as e:
             print(f"An unexpected error occured: {e}")
 
         # Complete process
         finally:
-            self.save_data()
-            self.driver.quit()
-            print("Driver closed, scraping terminated...")
-
+            self.complete_scraping_process()
+    
+    def complete_scraping_process(self):
+        self.save_data()
+        if self.driver:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass  # Handle the case where the driver might already be terminated
+        self.driver = None
+        print("Driver closed, scraping terminated...")
 
 class ScraperGUI:
-    def __init__(self, master, scraper):
+    def __init__(self, master):
         self.master = master
         self.master.title("EUvsDisinfo Scraper")
-
-        # Pass instance of the Scraper class
-        self.scraper = scraper
-
-        # Initialise scraper state
-        self.scraping = False
+        
+        # Empty scraper placeholder
+        self.scraper = None
         self.scrape_thread = None
 
         # Start/Pause button
@@ -335,25 +349,45 @@ class ScraperGUI:
         self.exit_button = tk.Button(self.master, text="Kill", command=self.kill_scraping)
         self.exit_button.pack(pady=10)
 
+        # Listboxes for filters
+        with open('filter_codes/countryregion_codes.json', 'r') as f:
+            self.countries = json.load(f)
+        self.country_listbox = self.create_listbox(self.countries, "Select Countries/Regions:")
+
+        with open('filter_codes/language_codes.json', 'r') as f:
+            self.languages = json.load(f)
+        self.language_listbox = self.create_listbox(self.languages, "Select Languages:")
+
+        with open('filter_codes/tag_codes.json', 'r') as f:
+            self.tags = json.load(f)
+        self.tag_listbox = self.create_listbox(self.tags, "Select Tags:")
 
     def scrape_process(self):
+        self.fetchset_selected_countries()
+        self.fetchset_selected_languages()
+        self.fetchset_selected_tags()
+
         while self.scraper.scraping:
             self.scraper.run()
             
     
     def start_pause(self):
-        if self.scraper.scraping:
+        if self.scraper and self.scraper.scraping:
             # If currently scraping, pause the process
             self.scraper.scraping = False
             self.scraper.pause_event.clear()
             self.start_pause_button.config(text="Start")
             print("Scraping paused...")
-        else:
+        else: 
             # If not scraping, start the process
+            # Start scraper if not started
+            if not self.scraper: 
+                self.scraper = Scraper("https://euvsdisinfo.eu/disinformation-cases/?view=grid&numberposts=60")
             print("Starting scraping...")
             self.scraper.scraping = True
             self.scraper.pause_event.set()
             self.start_pause_button.config(text="Pause")
+            
             # Start the scraping process in a separate thread
             if not self.scrape_thread or not self.scrape_thread.is_alive():
                 self.scrape_thread = Thread(target=self.scrape_process)
@@ -362,16 +396,59 @@ class ScraperGUI:
 
     def kill_scraping(self):
         # Kills the scraping process
-        self.scraper.scraping = False
-        self.start_pause_button.config(text="Start")
-        if self.scrape_thread and self.scrape_thread.is_alive():
-            self.scrape_thread.join()
+        # Prompt for user confirmation before killing the scraping process
+        if messagebox.askyesno("Confirm", "Are you sure you want to kill the scraper? This will lose all progress."):
+            if self.scraper:
+                    print("Killing scraper...")
+                    self.scraper.scraping = False
+                    self.scraper.pause_event.set()  # In case the scraping process is paused, ensure it resumes to properly terminate
+                    
+            # Wait for the scraping thread to finish if it's running
+            if self.scrape_thread and self.scrape_thread.is_alive():
+                self.scrape_thread.join()
+            
+            # Change the Start/Pause button text back to "Start"
+            self.scraper.driver.quit()
+            self.scraper = None
+            self.start_pause_button.config(text="Start")
+            
+
+    def create_listbox(self, items, label_text):
+        # Creates and returns a Listbox widget populated with items
+        listbox_label = tk.Label(self.master, text=label_text)
+        listbox_label.pack(pady=(10, 0))  
+        listbox = tk.Listbox(self.master, selectmode='multiple', exportselection=False)
+        for item in sorted(items.keys()):
+            listbox.insert(tk.END, item)
+        listbox.pack(pady=10)  
+        if not items:
+            print(f"Failed to fetch {label_text.lower()}, disabling selector.")
+            listbox.config(state='disabled')  # Disable listbox if items are not fetched
+        return listbox
+
+    
+    def fetchset_selected_countries(self):
+        # Fetches selected countries from the listbox and updates the selected_countries in the Scraper instance
+        selected_indices = self.country_listbox.curselection()
+        selected_country_codes = [self.countries[self.country_listbox.get(i)] for i in selected_indices]
+        self.scraper.selected_countries = selected_country_codes
+
+
+    def fetchset_selected_languages(self):
+        # Fetches selected languages from the listbox and updates the selected_languages in the Scraper instance
+        selected_indices = self.language_listbox.curselection()
+        selected_languages = [self.language_listbox.get(i) for i in selected_indices]
+        self.scraper.selected_languages = selected_languages
+
+
+    def fetchset_selected_tags(self):
+         # Fetches selected tags from the listbox and updates the selected_tags in the Scraper instance
+        selected_indices = self.tag_listbox.curselection()
+        selected_tags = [self.tags[self.tag_listbox.get(i)] for i in selected_indices if self.tag_listbox.get(i) in self.tags]
+        self.scraper.selected_tags = selected_tags
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    scraper = Scraper("https://euvsdisinfo.eu/disinformation-cases/?view=grid&numberposts=60")
-    countries = fetch_countries()
-    app = ScraperGUI(root, scraper)
+    app = ScraperGUI(root)
     root.mainloop()
- 
