@@ -16,7 +16,8 @@ import cloudscraper #https://pypi.org/project/cloudscraper/
 # Tkinter GUI
 import tkinter as tk
 from tkinter import ttk
-from tkinter import messagebox
+from tkinter import Tk, messagebox, END
+from tkcalendar import Calendar  # Start and end dates
 import customtkinter as ctk # Custom UI
 from CTkListbox import CTkListbox
 import threading
@@ -26,30 +27,33 @@ import csv # Writing to CSV file
 import undetected_chromedriver as uc # Undetected chromedriver from cloudflare systems
 import time # For wait times (testing)
 import math # Calculating pages
+import datetime # For adjusting dates
 import pandas as pd # Preprocessing
 import subprocess # Killing chrome
 import json # Open json files
 
 class Scraper:
-    def __init__(self, base_url, page_limit = 2):
+    def __init__(self, base_url):
         # Initialise URL
         self.base_url = base_url
         # Initialise scraping states
         self.scraping = False # For when scraper is currently running
         self.pause_event = threading.Event() # For pausing scrape
-        self.page_limit = page_limit  # Set max number of pages to scrape
         self.scraped_data = [] # List to hold scraped data
         self.sort_order = "descending"  # Start with descending order
         self.page_num = 1 # Starting page number
         self.halfway_reached = False  # Flag to indicate if page has reached halfway
         self.pages_scraped = 0  # Track number of pages scraped
         self.items_scraped = 0 # Track items scraped
+        self.max_items = None # User can set max items to scrape 
         self.scraped_urls = set() # Track scraped urls to avoid scraping the same pages
 
         # Initalise filters
         self.selected_countries = []  
         self.selected_languages = []
         self.selected_tags = []
+        self.start_date = None
+        self.end_date = None
 
         # Initialise driver with URL
         self.driver = self.setup_driver()
@@ -239,10 +243,35 @@ class Scraper:
                     print(f"Total items scraped: {self.items_scraped}")
 
                     # Adjust URL based on current page number, sort order, languages and tags.
-                    country_params = "&".join([f"disinfo_countries[]={code}" for code in self.selected_countries])
-                    language_params = "&".join([f"disinfo_language[]={lang}" for lang in self.selected_languages])
-                    tag_params = "&".join([f"disinfo_keywords[]={tag}" for tag in self.selected_tags])
-                    next_page_link = f"{self.base_url}&{country_params}&{language_params}&{tag_params}&sort={self.sort_order}"
+                    # Construct URL components conditionally
+                    params = []
+
+                    # Date parameters
+                    if self.start_date and self.end_date:
+                        date_params = f"date={self.start_date}%20-%20{self.end_date}"
+                        params.append(date_params)
+
+                    # Country parameters
+                    if self.selected_countries:
+                        country_params = "&".join([f"disinfo_countries[]={code}" for code in self.selected_countries])
+                        params.append(country_params)
+
+                    # Language parameters
+                    if self.selected_languages:
+                        language_params = "&".join([f"disinfo_language[]={lang}" for lang in self.selected_languages])
+                        params.append(language_params)
+
+                    # Tag parameters
+                    if self.selected_tags:
+                        tag_params = "&".join([f"disinfo_keywords[]={tag}" for tag in self.selected_tags])
+                        params.append(tag_params)
+
+                    # Append sort order and construct the full URL
+                    params.append(f"sort={self.sort_order}")
+                    if params:
+                        next_page_link = f"{self.base_url}&{'&'.join(params)}"
+                    else:
+                        next_page_link = self.base_url  # No additional parameters to add
                     
                     # Go to adjusted URL
                     print(f"Navigating to: {next_page_link}")
@@ -370,6 +399,24 @@ class ScraperGUI:
         # Exit button
         self.exit_button = ctk.CTkButton(self.master, text="Kill", command=self.kill_scraping)
         self.exit_button.pack(pady=10)
+        
+        # Calendar for start date
+        self.temp_start_date = None
+        self.start_date_label = ctk.CTkLabel(master, text="Start Date")
+        self.start_date_label.pack(pady=(10, 0))
+        self.start_calendar = Calendar(master, selectmode='day')
+        self.start_calendar.pack(pady=10)
+
+        # Calendar for end date
+        self.temp_end_date = None
+        self.end_date_label = ctk.CTkLabel(master, text="End Date")
+        self.end_date_label.pack(pady=(10, 0))
+        self.end_calendar = Calendar(master, selectmode='day')
+        self.end_calendar.pack(pady=10)
+
+        # Button to set the dates
+        self.set_date_button = ctk.CTkButton(self.master, text="Set Date", command=self.set_dates)
+        self.set_date_button.pack(pady=10)
 
         # Dictionary attributes for storing JSON data
         self.countries = {}
@@ -407,6 +454,26 @@ class ScraperGUI:
         return listbox
 
 
+    def set_dates(self):
+        date_format = "%m/%d/%y"
+        start_date = datetime.datetime.strptime(self.start_calendar.get_date(), date_format)
+        end_date = datetime.datetime.strptime(self.end_calendar.get_date(), date_format)
+
+        new_format = "%d.%m.%Y"
+        self.temp_start_date = start_date.strftime(new_format)
+        self.temp_end_date = end_date.strftime(new_format)
+
+        messagebox.showinfo("Date Set", f"Start Date: {self.temp_start_date}\nEnd Date: {self.temp_end_date}")
+
+
+    def fetch_dates_to_scraper(self):
+        if self.temp_start_date and self.temp_end_date:
+            self.scraper.start_date = self.temp_start_date
+            self.scraper.end_date = self.temp_end_date
+        else:
+            pass
+
+
     def fetch_set_selected_filters(self, filter_type):
         listbox = getattr(self, f"{filter_type}_listbox")
         selected_indices = listbox.curselection()
@@ -419,6 +486,7 @@ class ScraperGUI:
         self.fetch_set_selected_filters("countries")
         self.fetch_set_selected_filters("languages")
         self.fetch_set_selected_filters("tags")
+        self.fetch_dates_to_scraper()
 
         try:
             while self.scraper.scraping:
