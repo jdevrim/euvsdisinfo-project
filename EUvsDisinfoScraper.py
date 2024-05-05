@@ -11,7 +11,6 @@ from selenium.common.exceptions import NoSuchElementException, TimeoutException,
 # Web scraping libraries
 from bs4 import BeautifulSoup
 import requests
-import cloudscraper #https://pypi.org/project/cloudscraper/
 
 # Tkinter GUI
 import tkinter as tk
@@ -30,7 +29,9 @@ import datetime # For adjusting dates
 import pandas as pd # Preprocessing
 import subprocess # Killing chrome
 import json # Open json files
+import os # Path operations
 
+# Scraper logic and initialisation 
 class Scraper:
     def __init__(self, base_url, update_callback = None, output_callback = None, 
     warning_callback = None, error_callback = None, success_callback = None):
@@ -90,7 +91,6 @@ class Scraper:
         self.success_callback("SUCCESS: Driver initialised.")
         
         return self.driver
-
 
 
     def scrape_page(self):
@@ -169,24 +169,29 @@ class Scraper:
 
         return data
 
-
+    # Find total items found from filter search
     def fetch_total_items(self, next_page_link):
         page_html = self.driver.page_source  # Get the HTML source of the page after navigating
-        page = BeautifulSoup(page_html, 'html.parser')  # Parse it with BeautifulSoup 
+        page = BeautifulSoup(page_html, 'html.parser') 
 
+        # Find total items content under "b-archive__results-count"
         cases_div = page.find("div", class_="b-archive__results-count")
         if cases_div:
             self.total_items = int(cases_div.text.strip().split()[0])
             self.output_callback(f"Total items found from filters: {self.total_items}")
+            # Update loading bar
             if self.update_callback:
                 self.update_callback(0, self.total_items)
+            # Don't run again
             self.total_items_fetched = True 
 
 
     def accept_cookies(self):
         if self.driver:
             try:
+                # Wait till cookies avaliable
                 wait = WebDriverWait(self.driver, 10)
+                # Click accept
                 cookies = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "a.c-button")))
                 self.driver.execute_script("arguments[0].click();", cookies)
                 self.success_callback("SUCCESS: Cookies accepted.")
@@ -195,34 +200,60 @@ class Scraper:
         else:
             pass
 
-         
+
+    # Get the last page divided by two
     def pagination_info(self):
-        # Get the last page divided by two
-        # Fix for database breaking after reaching large page numbers
-        # Fixed by finding last page number (half) and sorting by oldest entry and repeating scrape
-        page_html = self.driver.page_source
-        page = BeautifulSoup(page_html, "html.parser")
-        pagination_items = page.select('a.b-pagination__item')[-1].get_text()  
-        last_page = int(pagination_items) if pagination_items.isdigit() else 1
-        half_page = math.ceil(last_page / 2)
+        try:
+            # Fix for database breaking after reaching large page numbers
+            # Fixed by finding last page number (half) and sorting by oldest entry and repeating scrape
+            page_html = self.driver.page_source
+            page = BeautifulSoup(page_html, "html.parser")
+
+            pagination_items = page.select('a.b-pagination__item')[-1].get_text()  
+            if not pagination_items:
+                raise Exception
+            print(pagination_items)
+            last_page = int(pagination_items) if pagination_items.isdigit() else 1
+            print(last_page)
+            half_page = math.ceil(last_page / 2)
+            print(half_page)
+            self.pagination_fetched = True
+            return half_page
+
+        except NoSuchElementException:
+            self.warning_callback("WARNING: Pagination elements not found on the page")
+            return None
+        except Exception:
+            self.warning_callback("WARNING: Pagination elements not found. Ignore this if scraping small amount of items")
+            return None
+        
         self.pagination_fetched = True
-        return half_page
 
-
+    # Write the list of scraped data dictionaries to a CSV file
     def save_data(self):
-        # Write the list of dictionaries to a CSV file
         if self.scraped_data:
             try:
                 self.output_callback("Sorting and cleaning data...")
                 keys = self.scraped_data[0].keys()  # Get the keys from the first item in the list
-                with open('euvsdisinfo.csv', 'w', newline='', encoding='utf-8-sig') as output_file:
+                
+                # Generate a timestamped filename (prevent overwriting)
+                timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                filename = f'euvsdisinfo_{timestamp}.csv'
+                full_path = os.path.abspath(filename)
+
+                # Create file
+                with open(filename, 'w', newline='', encoding='utf-8-sig') as output_file:
                     dict_writer = csv.DictWriter(output_file, keys)
                     dict_writer.writeheader()
                     dict_writer.writerows(self.scraped_data)
+
                 # Preprocessing
-                df = pd.read_csv('euvsdisinfo.csv')
+                df = pd.read_csv(filename)
                 df = df.drop_duplicates()
-                df.to_csv('euvsdisinfo.csv', index=False, encoding='utf-8-sig')
+                df.to_csv(filename, index=False, encoding='utf-8-sig')
+
+                self.success_callback(f"SUCCESS: Data saved to: {full_path}")
+
             except IndexError:
                 self.warning_callback("WARNING: No data found. CSV file will not be created")
             except Exception as e:
@@ -231,8 +262,9 @@ class Scraper:
             self.warning_callback("WARNING: No data found. CSV file will not be created")
     
 
+    # Create URL based on user set filters
     def construct_url(self):
-        # Initialize with fixed parameters
+        # Initialise with fixed parameters
         fixed_params = ["view=grid", "numberposts=60", f"sort={self.sort_order}"]
         dynamic_params = []
 
@@ -270,6 +302,7 @@ class Scraper:
         return full_url
 
 
+    # Wait for elements to load on page function
     def wait_for_elements(self, css_selector, timeout):
         # Wait for elements to be present on page
         WebDriverWait(self.driver, timeout).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, css_selector)))
@@ -281,9 +314,11 @@ class Scraper:
         return True
 
 
+    # Main scraper function
     def run(self):
         try:
             self.scraping = True
+            self.scraped_data = [] # Clear previous data if any
             self.output_callback("Starting scraper...")
             self.accept_cookies()
         except Exception as e:
@@ -335,13 +370,15 @@ class Scraper:
                         self.pause_event.wait()  # Pause here if pause_event is cleared
                         if not self.check_if_scraping():  # Check if scraping should still be active
                             break  # Return if killed
-
+                        
+                        # If item already scraped
                         if item in self.scraped_urls:
                             self.scraping = False
                             self.output_callback("Detected a repeated page...")
                             break
+                        
+                        # Scrape item
                         self.output_callback(f"Processing: {item}")
-
                         try: 
                             self.scraped_urls.add(item) # Add item to set of URLs
                             self.driver.get(item) 
@@ -389,7 +426,7 @@ class Scraper:
                         break  
 
                     # Check for halfway mark (fix for database breaking)
-                    if self.page_num >= half_page and not self.halfway_reached:
+                    if half_page and self.page_num >= half_page and not self.halfway_reached:
                         self.sort_order = "asc"  # Switch to ascending order
                         self.page_num = 1  # Restart from the first page
                         self.halfway_reached = True  # Prevent further changes in sort order
@@ -439,6 +476,7 @@ class Scraper:
             self.success_callback("SUCCESS: Scraping terminated.")
 
 
+# User commands and GUI
 class ScraperGUI:
     def __init__(self, master):
         self.master = master
@@ -447,8 +485,10 @@ class ScraperGUI:
         # Empty scraper placeholder
         self.scraper = None
         self.scrape_thread = None
-        self.killing_scraper = False  # Track if a kill attempt is underway
+        self.killing_scraper = False  # Track if a kill attempt is happening
 
+
+        # Framing
         # Top Frame for Title and Control Buttons
         top_frame = ctk.CTkFrame(master)
         top_frame.pack(fill='x', padx=10, pady=10)
@@ -468,6 +508,7 @@ class ScraperGUI:
         date_filter_frame = ctk.CTkFrame(top_frame)
         date_filter_frame.pack(side='left', fill='both', expand=True, padx=10, pady=10)
 
+
         # Title
         title_label = ctk.CTkLabel(control_frame, text="EUvsDisinfo Scraper", font=("Arial", 26, 'bold'))
         title_label.pack(pady=(10, 20))
@@ -475,7 +516,6 @@ class ScraperGUI:
         # Date range title
         date_title_label = ctk.CTkLabel(date_filter_frame, text="Article Publication Date Range")
         date_title_label.pack(pady=(10, 0))
-
 
         # Start/Pause button
         self.start_pause_button = ctk.CTkButton(control_frame, text="Start Scraper", command=self.start_pause)
@@ -495,14 +535,13 @@ class ScraperGUI:
         self.set_max_items_button = ctk.CTkButton(control_frame, text="Set Max Items", command=self.set_max_items)
         self.set_max_items_button.pack(pady=5)
 
-
         # Calendar for start date
         self.temp_start_date = None
         self.start_date_label = ctk.CTkLabel(date_filter_frame, text="Start Date")
         self.start_date_label.pack(pady=(10, 0))
         self.start_calendar = Calendar(date_filter_frame, selectmode='day')
         self.start_calendar.pack(padx=10, pady=5)
-
+        
         # Calendar for end date
         self.temp_end_date = None
         self.end_date_label = ctk.CTkLabel(date_filter_frame, text="End Date")
@@ -511,9 +550,9 @@ class ScraperGUI:
         self.end_calendar.pack(padx=10, pady=5)
 
         # Button to set the dates
+        self.dates_set = False
         self.set_date_button = ctk.CTkButton(date_filter_frame, text="Set Dates", command = self.set_dates)
         self.set_date_button.pack(pady=10)
-
 
         # Middle section for filters
         self.filter_frame = ctk.CTkFrame(top_frame, width=600)
@@ -523,7 +562,6 @@ class ScraperGUI:
         self.countries_listbox = self.create_listbox(self.filter_frame, 'filter_codes/countryregion_codes.json', "Countries / Regions Discussed", 'countries')
         self.languages_listbox = self.create_listbox(self.filter_frame, 'filter_codes/language_codes.json', "Article Published Language(s)", 'languages')
         self.tags_listbox = self.create_listbox(self.filter_frame, 'filter_codes/tag_codes.json', "Filter Tags", 'tags')
-
         
         # Setup a Text widget for output logs
         self.output_textbox = Text(text_frame, width=70, height=10, state="disabled",
@@ -535,12 +573,6 @@ class ScraperGUI:
         scrollbar = Scrollbar(text_frame, command=self.output_textbox.yview)
         scrollbar.pack(side='right', fill='y')
         self.output_textbox.config(yscrollcommand=scrollbar.set)
-                
-        # Set colours for output logs
-        self.output_textbox.tag_config("info", foreground="white")
-        self.output_textbox.tag_config("warning", foreground="yellow")
-        self.output_textbox.tag_config("error", foreground="red")
-        self.output_textbox.tag_config("success", foreground="green")
 
         # Initialised progress bar
         self.progress_bar = ctk.CTkProgressBar(bottom_frame, width=400, height=20)
@@ -550,9 +582,17 @@ class ScraperGUI:
         self.progress_label = ctk.CTkLabel(bottom_frame, text="Loading: 0%", font=("Helvetica", 16))
         self.progress_label.pack(fill='x', expand=True)
 
-        self.append_output("CONSOLE LOGS", "info")
+        # Set colours for output logs
+        self.output_textbox.tag_config("info", foreground="white")
+        self.output_textbox.tag_config("warning", foreground="yellow")
+        self.output_textbox.tag_config("error", foreground="red")
+        self.output_textbox.tag_config("success", foreground="green")
+        self.append_output("CONSOLE LOGS", "info")  
 
+
+    # Create listboxes
     def create_listbox(self, frame, file_path, label_text, attribute_name):
+        # Framing and adjustments
         listbox_frame = ctk.CTkFrame(frame)
         listbox_frame.pack(side='left', padx=20, fill='both', expand=True)
 
@@ -562,6 +602,7 @@ class ScraperGUI:
         listbox = CTkListbox(listbox_frame, multiple_selection= True)
         listbox.pack(pady=10, fill='both', expand=True)
 
+        # Load file and insert filters
         try:
             with open(file_path, 'r') as f:
                 items = json.load(f)  # Load JSON data into the attribute
@@ -581,6 +622,7 @@ class ScraperGUI:
         return listbox
 
 
+    # Set max items for max items box
     def set_max_items(self):
         max_items_str = self.max_items_entry.get()
         try:
@@ -591,6 +633,7 @@ class ScraperGUI:
             self.max_items_entry.delete(0, ctk.END)  # Clear the entry field after setting
 
 
+    # Fetch total items from scraper
     def fetch_max_items_to_scraper(self):
         if hasattr(self, 'temp_max_items'):
             if self.scraper:
@@ -598,19 +641,34 @@ class ScraperGUI:
         else:
             pass
 
-
+    
+    # Convert set dates and deselect dates
     def set_dates(self):
-        date_format = "%m/%d/%y"
-        start_date = datetime.datetime.strptime(self.start_calendar.get_date(), date_format)
-        end_date = datetime.datetime.strptime(self.end_calendar.get_date(), date_format)
+        if not self.dates_set:
+            # Convert dates from calendars and set them
+            # American formatting
+            date_format = "%m/%d/%y"
+            start_date = datetime.datetime.strptime(self.start_calendar.get_date(), date_format)
+            end_date = datetime.datetime.strptime(self.end_calendar.get_date(), date_format)
 
-        new_format = "%d.%m.%Y"
-        self.temp_start_date = start_date.strftime(new_format)
-        self.temp_end_date = end_date.strftime(new_format)
+            # Convert to English formatting
+            new_format = "%d.%m.%Y"
+            self.temp_start_date = start_date.strftime(new_format)
+            self.temp_end_date = end_date.strftime(new_format)
 
-        messagebox.showinfo("Date Set", f"Start Date: {self.temp_start_date}\nEnd Date: {self.temp_end_date}")
+            messagebox.showinfo("Date Set", f"Start Date: {self.temp_start_date}\nEnd Date: {self.temp_end_date}")
+            self.set_date_button.configure(text="Clear Dates")
+            self.dates_set = True
+        else:
+            # Clear the dates
+            self.temp_start_date = None
+            self.temp_end_date = None
+            messagebox.showinfo("Dates Cleared", "Start and End Dates have been cleared.")
+            self.set_date_button.configure(text="Set Dates")
+            self.dates_set = False
 
 
+    # Set the start and end dates for the scraper
     def fetch_dates_to_scraper(self):
         if self.temp_start_date and self.temp_end_date:
             self.scraper.start_date = self.temp_start_date
@@ -619,6 +677,7 @@ class ScraperGUI:
             pass
 
 
+    # Retrieve listbox filter and send to scraper
     def fetch_set_selected_filters(self, filter_type):
         listbox = getattr(self, f"{filter_type}_listbox")
         selected_indices = listbox.curselection()
@@ -627,6 +686,7 @@ class ScraperGUI:
         setattr(self.scraper, f"selected_{filter_type}", selected_codes)
 
 
+    # Update GUI progress bar 
     def update_progress(self, scraped_count, total=None):
         def gui_update():
             if total is not None and total > 0:
@@ -641,6 +701,7 @@ class ScraperGUI:
         self.master.after(0, gui_update)  # Ensure GUI updates happen on the main thread
 
 
+    # Append message to output textbox with specified tag
     def append_output(self, message, tag_type="info"):
         def do_append():
             self.output_textbox.configure(state="normal")
@@ -654,7 +715,9 @@ class ScraperGUI:
         self.master.after(0, do_append)
 
 
+    # Main process loop for the scraper
     def scrape_process(self):
+        # Initialise scraper with filters
         self.fetch_max_items_to_scraper()
         self.fetch_dates_to_scraper()
         self.fetch_set_selected_filters("countries")
@@ -666,13 +729,15 @@ class ScraperGUI:
                 self.scraper.pause_event.wait()  # Wait if paused
                 if not self.scraper.scraping:
                     break  # Break loop if scraping was stopped during pause
-                self.scraper.run()  # The main function to perform scraping
+                self.scraper.run()  # Main scraping function
         finally:
+            # Clean resources and reset state
             if self.scraper:
                 self.scraper.complete_scraping_process()
                 self.scraper = None
 
     
+    # Start / pause button
     def start_pause(self):
         if not self.scraper:
             # Initialise the scraper and start it for the first time
@@ -704,7 +769,7 @@ class ScraperGUI:
             self.append_output("Scraping resumed.", "info")
                     
 
-
+    # Kill scraper button
     def kill_scraping(self, ask_confirmation=True):
         def update_gui_post_kill():
             self.start_pause_button.configure(text="Start")
@@ -720,7 +785,7 @@ class ScraperGUI:
 
         if self.scraper:
             self.killing_scraper = True
-            self.append_output("WARNING: Killing scraper...", "warning")
+            self.append_output("WARNING: Killing scraper.", "warning")
             self.scraper.scraping = False
             self.scraper.pause_event.set()  # Ensure any pause state is exited
 
@@ -730,6 +795,7 @@ class ScraperGUI:
 
             # Update the GUI safely from the main thread
             self.master.after(0, update_gui_post_kill)
+
 
 
 if __name__ == "__main__":
